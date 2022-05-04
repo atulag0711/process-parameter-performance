@@ -98,11 +98,13 @@ class GP(object):
         return loss
 
     # -- Set of fucntions related to adaptively fitting
-    def adapt_fit(self,num_steps,eps=1e-6):
+    def adapt_fit(self,x_init,num_steps=10,kappa =2,eps=1e-6):
         """
 
         Parameters
         ----------
+        kappa :
+        x_init :
         num_steps :
         eps :
 
@@ -110,24 +112,29 @@ class GP(object):
         -------
 
         """
-        # TODO: link it with the fit function. Also define the x_init points
+        self.kappa = kappa
+        print("The acquisition function selected is y(x) = argmin_x \mu(x) - k* \sigma(x)  ")
+        self.fit(x_init)
         for i in range(num_steps):
-            #x, fopt = self.adapt_maximizer.maximize(self.acquisition_obj.acquisition_curve, self.lower_bound, self.upper_bound)
-            x_opt = self.multi_start_opt()
-            if np.abs(fopt) > eps: # some stopping criterion
-                y = self.wrapper_fn(x_opt)  # evaluate f at new point.
+            x_opt, fopt = self.multi_start_opt()
+            if th.abs(fopt) > eps: # some stopping criterion
+                y = self.wrapper_fn(x_opt.detach().numpy())  # evaluate f at new point.
                 X = th.cat([self.gpr.X, x_opt])  # incorporate new evaluation
-                y = th.cat([self.gpr.y, y])
+                y = th.cat([self.gpr.y, th.from_numpy(y)])
                 self.gpr.set_data(X, y)
                 # optimize the GP hyperparameters using Adam with lr=0.001
                 optimizer = th.optim.Adam(self.gpr.parameters(), lr=0.001)
-                gp.util.train(self.gpr, optimizer)
+                loss = gp.util.train(self.gpr, optimizer)
+                # X = th.cat([self.gpr.X, x_opt])
+                # assert X.shape[1] == self.input_dim
+                # #X = th.reshape(X,(-1,1))
+                # loss = self.fit(X.detach().numpy())
             else:
                 print("Adaptivity stopped because of very low variance")
                 break
+        return loss
 
-
-    def acquisition_fn(self, X, kappa =2):
+    def acquisition_fn(self, X):
         """
         #TODO: Generalise it and add possibility to add other types also
         The lower confidence bound acq fn. Striking a balance between exploitation and exploration
@@ -143,7 +150,7 @@ class GP(object):
         #mu, variance = model(X, full_cov=False, noiseless=False)
         mu, cov = self.predict(X)
         sigma = cov.sqrt()
-        return mu - kappa * sigma
+        return mu - self.kappa * sigma
 
     def optimise_acq_fn(self,x_init,lower_bound=0, upper_bound=1):
         """
@@ -207,11 +214,13 @@ class GP(object):
             y = self.acquisition_fn(x)
             candidates.append(x)
             values.append(y)
-            x_init = x.new_empty(1).uniform_(lower_bound, upper_bound)  # chosen uniformly at random from the domain
+            x_init = x.new_empty((1,self.input_dim)).uniform_(lower_bound, upper_bound)  # chosen uniformly at random from the domain
             # of the objective function, of the same size
 
-        argmin = th.min(th.cat(values), dim=0)[1].item() # index for which y is min
-        return candidates[argmin] # returns the best x
+        argmin = th.min(th.cat(values), dim=0)[1].item() # index for which y is
+        y_min = th.min(th.cat(values))
+
+        return candidates[argmin],y_min # returns the best x
 
     # -- common functions -------------------------------------------------------------------------------------
 
@@ -227,12 +236,14 @@ class GP(object):
         -------
 
         """
+        if isinstance(X,np.ndarray):
+            X = th.from_numpy(X)
         assert X.ndim == 2, "invalid input shape, it should be a 2d vector"
         assert X.shape[1] == self.input_dim, "invalid input dim"
-        mean, cov = self.gpr(th.from_numpy(X), full_cov=False,noiseless=False)  # Remove or include observational noise
+        mean, cov = self.gpr(X, full_cov=False,noiseless=False)  # Remove or include observational noise
         # in prediction?
 
-        return mean.detach().numpy(), cov.detach().numpy()
+        return mean, cov
 
     def get_mse(self, xtest=None, ytest=None, num_points=100):
         """
@@ -257,7 +268,7 @@ class GP(object):
             Ytest = self.function(Xtest)
         pred, _ = self.predict(xtest)
         loss = th.nn.MSELoss()
-        output = loss(th.tensor(pred), th.tensor(Ytest))
+        output = loss(th.from_numpy(pred), th.from_numpy(Ytest))
         return output
 
     # -- plots ------------------------------
